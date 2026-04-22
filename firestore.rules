@@ -1,0 +1,99 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // ===============================================================
+    // Assumed Data Model
+    // ===============================================================
+    //
+    // Collection: users
+    // Document ID: {userId}
+    // Fields:
+    //   - uid: string (required)
+    //   - email: string (required, email format)
+    //   - displayName: string (optional)
+    //   - photoURL: string (optional, uri format)
+    //   - createdAt: timestamp (required)
+    //
+    // Collection: designs
+    // Document ID: {designId}
+    // Fields:
+    //   - userId: string (required)
+    //   - type: string (required, enum: ['3d-generator', 'interior-designer'])
+    //   - prompt: string (required)
+    //   - style: string (required)
+    //   - data: map (required)
+    //   - createdAt: timestamp (required)
+    //
+    // Collection: reviews
+    // Document ID: {reviewId}
+    // Fields:
+    //   - userId: string (required)
+    //   - userName: string (required)
+    //   - rating: number (required, 1-5)
+    //   - comment: string (required, max 500 chars)
+    //   - createdAt: timestamp (required)
+    //
+    // ===============================================================
+
+    // Helper Functions
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function isAdmin() {
+      return isAuthenticated() && 
+        (exists(/databases/$(database)/documents/users/$(request.auth.uid)) && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin' ||
+         (request.auth.token.email == "janafil@gmail.com" && request.auth.token.email_verified == true));
+    }
+
+    function isValidEmail(email) {
+      return email is string && email.matches("^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$");
+    }
+
+    // Domain Validators
+    function isValidUser(data) {
+      return data.keys().hasAll(['uid', 'email', 'createdAt']) &&
+             data.uid == request.auth.uid &&
+             isValidEmail(data.email);
+    }
+
+    function isValidDesign(data) {
+      return data.keys().hasAll(['userId', 'type', 'data', 'createdAt']) &&
+             data.userId == request.auth.uid &&
+             data.type in ['3d-generator', 'interior-designer'];
+    }
+
+    function isValidReview(data) {
+      return data.keys().hasAll(['userId', 'userName', 'rating', 'comment', 'createdAt']) &&
+             data.userId == request.auth.uid &&
+             data.rating >= 1 && data.rating <= 5 &&
+             data.comment is string && data.comment.size() <= 500;
+    }
+
+    // Rules
+    match /users/{userId} {
+      allow read: if isOwner(userId) || isAdmin();
+      allow create: if isOwner(userId) && isValidUser(request.resource.data);
+      allow update: if isOwner(userId) && isValidUser(request.resource.data) && 
+                    request.resource.data.uid == resource.data.uid;
+    }
+
+    match /designs/{designId} {
+      allow read: if isAuthenticated() && (resource.data.userId == request.auth.uid || isAdmin());
+      allow create: if isAuthenticated() && isValidDesign(request.resource.data);
+      allow update: if false; // Designs are immutable for now
+      allow delete: if isAuthenticated() && (resource.data.userId == request.auth.uid || isAdmin());
+    }
+
+    match /reviews/{reviewId} {
+      allow read: if true; // Reviews are public
+      allow create: if isAuthenticated() && isValidReview(request.resource.data);
+      allow update: if isAuthenticated() && isOwner(resource.data.userId) && isValidReview(request.resource.data);
+      allow delete: if isAuthenticated() && (isOwner(resource.data.userId) || isAdmin());
+    }
+  }
+}
